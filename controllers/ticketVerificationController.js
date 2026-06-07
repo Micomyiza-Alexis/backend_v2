@@ -328,7 +328,9 @@ const checkInTicket = async (req, res) => {
 /**
  * Create confirmed ticket(s) without provider payment flow.
  * POST /api/tickets/create
- * body: { tripId, seats, userId? }
+ * body: { tripId, seats, userId?, payment_id }
+ * 
+ * STRICT RULE: payment_id must be provided and verified as PAID before creating tickets.
  */
 const createTicket = async (req, res) => {
   let client;
@@ -336,6 +338,7 @@ const createTicket = async (req, res) => {
     const userId = req.userId || req.body?.userId;
     const tripId = String(req.body?.tripId || req.body?.scheduleId || '').trim();
     const seatNumbers = toSeatArray(req.body?.seats || req.body?.selectedSeats);
+    const payment_id = req.body?.payment_id;
 
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Authentication required' });
@@ -347,7 +350,41 @@ const createTicket = async (req, res) => {
       return res.status(400).json({ success: false, message: 'At least one seat is required' });
     }
 
+    // STRICT RULE ENFORCEMENT: Tickets can only be created after payment is PAID
+    if (!payment_id) {
+      return res.status(402).json({
+        success: false,
+        message: 'Cannot create ticket: payment_id is required. Strict rule: tickets require confirmed payment.',
+      });
+    }
+
     client = await pool.connect();
+    
+    // Verify payment status before creating tickets
+    const paymentCheck = await client.query(
+      `SELECT id, booking_status, status FROM payments WHERE id::text = $1::text LIMIT 1`,
+      [payment_id]
+    );
+
+    if (!paymentCheck.rows.length) {
+      client.release();
+      return res.status(404).json({
+        success: false,
+        message: 'Payment not found. Cannot create ticket without valid payment.',
+      });
+    }
+
+    const payment = paymentCheck.rows[0];
+    const isPaid = (payment.booking_status === 'paid' || payment.booking_status === 'PAID' || 
+                   payment.status === 'success' || payment.status === 'SUCCESS');
+    
+    if (!isPaid) {
+      client.release();
+      return res.status(402).json({
+        success: false,
+        message: `Cannot create ticket: payment status is "${payment.status}", expected "success" or "PAID"`,
+      });
+    }
     await client.query('BEGIN');
 
     const scheduleResult = await client.query(
@@ -418,11 +455,11 @@ const createTicket = async (req, res) => {
           INSERT INTO tickets (
             id, passenger_id, schedule_id, company_id,
             seat_number, booking_ref, qr_code_url, price,
-            status, booked_at, created_at, updated_at
+            payment_id, status, booked_at, created_at, updated_at
           ) VALUES (
             $1, $2, $3, $4,
             $5, $6, $7, $8,
-            'CONFIRMED', NOW(), NOW(), NOW()
+            $9, 'CONFIRMED', NOW(), NOW(), NOW()
           )
           RETURNING id, schedule_id, seat_number, booking_ref, qr_code_url, status, price, booked_at
         `,
@@ -435,6 +472,7 @@ const createTicket = async (req, res) => {
           bookingRef,
           qrCodeUrl,
           Number(schedule.price_per_seat || 0),
+          payment_id,
         ]
       );
 

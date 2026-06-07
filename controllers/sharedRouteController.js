@@ -1166,9 +1166,44 @@ const bookTicket = async (req, res) => {
 const bookSharedTicket = async (req, res) => {
   let client;
   try {
-    const { schedule_id, from_stop, to_stop, seat_number, passenger_name } = req.body;
+    const { schedule_id, from_stop, to_stop, seat_number, passenger_name, payment_id } = req.body;
     if (!schedule_id || !from_stop || !to_stop) {
       return res.status(400).json({ success: false, message: 'schedule_id, from_stop and to_stop are required' });
+    }
+
+    // STRICT RULE ENFORCEMENT: Tickets can only be created after payment is PAID
+    // If payment_id is provided, verify it's marked as paid
+    if (payment_id) {
+      client = await pool.connect();
+      const paymentCheck = await client.query(
+        `SELECT id, booking_status, status FROM payments WHERE id::text = $1::text LIMIT 1`,
+        [payment_id]
+      );
+      client.release();
+
+      if (!paymentCheck.rows.length) {
+        return res.status(404).json({
+          success: false,
+          message: 'Payment not found. Cannot book ticket without valid payment.',
+        });
+      }
+
+      const payment = paymentCheck.rows[0];
+      const isPaid = (payment.booking_status === 'paid' || payment.booking_status === 'PAID' || 
+                     payment.status === 'success' || payment.status === 'SUCCESS');
+      
+      if (!isPaid) {
+        return res.status(402).json({
+          success: false,
+          message: `Cannot create ticket: payment status is "${payment.status}", expected "success" or "PAID"`,
+        });
+      }
+    } else {
+      // No payment provided - this is a violation of the payment-first rule
+      return res.status(402).json({
+        success: false,
+        message: 'Cannot create ticket: payment_id is required. Strict rule: tickets require confirmed payment.',
+      });
     }
 
     client = await pool.connect();
@@ -1339,6 +1374,7 @@ const bookSharedTicket = async (req, res) => {
     add('seat_number', selectedSeat);
     add('price', segPrice);
     add('passenger_name', passenger_name || null);
+    add('payment_id', payment_id || null);
     add('status', 'CONFIRMED');
     add('booking_ref', `SHR-${Date.now()}-${Math.floor(Math.random() * 10000)}`);
     add('booked_at', new Date());
@@ -1880,7 +1916,8 @@ const getGuestTickets = async (req, res) => {
 
     client = await pool.connect();
 
-    const bookingResult = await client.query(
+    // First try: Search by payment ID or transaction_ref
+    let bookingResult = await client.query(
       `
         SELECT
           p.id AS booking_id,
@@ -1903,10 +1940,37 @@ const getGuestTickets = async (req, res) => {
       [bookingLookup, email]
     );
 
+    // If not found in payments, try searching by ticket booking_ref
+    if (!bookingResult.rows.length) {
+      bookingResult = await client.query(
+        `
+          SELECT DISTINCT
+            p.id AS booking_id,
+            p.transaction_ref,
+            p.amount,
+            p.booking_status,
+            p.status AS payment_status,
+            p.schedule_id,
+            p.meta,
+            u.id AS passenger_id,
+            u.full_name AS passenger_name,
+            u.email AS passenger_email,
+            u.phone_number AS passenger_phone
+          FROM payments p
+          INNER JOIN users u ON u.id = p.user_id
+          INNER JOIN tickets t ON t.payment_id::text = p.id::text
+          WHERE (LOWER(COALESCE(t.booking_ref, '')) = LOWER($1))
+            AND LOWER(u.email) = LOWER($2)
+          LIMIT 1
+        `,
+        [bookingLookup, email]
+      );
+    }
+
     if (!bookingResult.rows.length) {
       return res.status(404).json({
         success: false,
-        message: 'No booking found for the provided email and booking ID',
+        message: 'No booking found for the provided email and booking ID. Please check the email and reference number match your confirmation.',
       });
     }
 
@@ -1925,7 +1989,7 @@ const getGuestTickets = async (req, res) => {
           COALESCE(r.origin, rr.from_location, t.from_stop, '') AS route_from,
           COALESCE(r.destination, rr.to_location, t.to_stop, '') AS route_to,
           COALESCE(s.schedule_date, bs.date) AS schedule_date,
-          COALESCE(s.departure_time, bs.time) AS departure_time,
+          COALESCE(s.departure_time::text, bs.time::text) AS departure_time,
           b.id AS bus_id,
           b.plate_number AS bus_plate
         FROM tickets t
@@ -2049,7 +2113,7 @@ const getGuestBookingLocation = async (req, res) => {
           COALESCE(r.origin, rr.from_location, t.from_stop, '') AS route_from,
           COALESCE(r.destination, rr.to_location, t.to_stop, '') AS route_to,
           COALESCE(s.schedule_date, bs.date) AS schedule_date,
-          COALESCE(s.departure_time, bs.time) AS departure_time,
+          COALESCE(s.departure_time::text, bs.time::text) AS departure_time,
           b.id AS bus_id,
           b.plate_number,
           COALESCE(s.schedule_id, bs.schedule_id) AS schedule_id

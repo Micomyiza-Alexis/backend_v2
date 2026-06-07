@@ -258,6 +258,17 @@ function normalize_gateway_status($gatewayResponse): string
 
 function create_ticket_if_missing(PDO $pdo, array $booking): array
 {
+    // STRICT RULE: Cannot create ticket unless booking payment is confirmed PAID
+    if (($booking['status'] ?? null) !== 'PAID') {
+        throw new RuntimeException(
+            sprintf(
+                'Cannot create ticket: booking %d payment status is "%s", expected "PAID"',
+                $booking['id'] ?? 0,
+                $booking['status'] ?? 'null'
+            )
+        );
+    }
+
     $find = $pdo->prepare('SELECT id, ticket_number, booking_id, status, created_at FROM tickets WHERE booking_id = :booking_id LIMIT 1');
     $find->execute([':booking_id' => $booking['id']]);
     $existing = $find->fetch();
