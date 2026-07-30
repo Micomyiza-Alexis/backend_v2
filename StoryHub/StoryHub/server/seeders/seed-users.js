@@ -1,56 +1,57 @@
-// seeders/YYYYMMDDHHMMSS-seed-users.js
 'use strict';
+
 const bcrypt = require('bcryptjs');
+const { randomUUID } = require('crypto');
 
 module.exports = {
   async up(queryInterface, Sequelize) {
-    const hashedPassword = await bcrypt.hash('password123', 10);
-    
+    const hashedPassword = await bcrypt.hash('Admin@123', 10);
+
     await queryInterface.bulkInsert('users', [
       {
-        username: 'admin',
-        email: 'admin@example.com',
+        id: randomUUID(),
+
+        email: 'admin@safaritix.com',
         password: hashedPassword,
+        full_name: 'System Administrator',
+
+        phone_number: null,
+
         role: 'admin',
-        bio: 'System administrator',
-        avatar: 'https://example.com/avatar1.jpg',
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        username: 'johndoe',
-        email: 'john@example.com',
-        password: hashedPassword,
-        role: 'user',
-        bio: 'Software developer and blogger',
-        avatar: 'https://example.com/avatar2.jpg',
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        username: 'janedoe',
-        email: 'jane@example.com',
-        password: hashedPassword,
-        role: 'user',
-        bio: 'Content writer and photographer',
-        avatar: 'https://example.com/avatar3.jpg',
-        created_at: new Date(),
-        updated_at: new Date()
-      },
-      {
-        username: 'alexsmith',
-        email: 'alex@example.com',
-        password: hashedPassword,
-        role: 'user',
-        bio: 'Travel enthusiast and food blogger',
-        avatar: 'https://example.com/avatar4.jpg',
+
+        company_id: null,
+
+        is_active: true,
+        email_verified: true,
+
+        last_login: null,
+
+        preferences: JSON.stringify({
+          language: 'en',
+          notifications: {
+            email: true,
+            sms: false,
+            promotional: false
+          }
+        }),
+
+        must_change_password: false,
+        company_verified: true,
+        account_status: 'approved',
+
+        permissions: {},
+
+        supabase_user_id: null,
+
         created_at: new Date(),
         updated_at: new Date()
       }
-    ], {});
+    ]);
   },
 
   async down(queryInterface, Sequelize) {
-    await queryInterface.bulkDelete('users', null, {});
+    await queryInterface.bulkDelete('users', {
+      email: 'admin@safaritix.com'
+    });
   }
 };
