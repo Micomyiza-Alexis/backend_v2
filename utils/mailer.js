@@ -31,29 +31,36 @@ console.log({
 }
 
 const sendEmail = async ({ to, subject, text, html, attachments = [] }) => {
-  if (transporter) {
-    try {
-      const info = await transporter.sendMail({
-        from: `"${process.env.SMTP_FROM_NAME || 'SafariTix'}" <${smtpFromEmail}>`,
-        to,
-        subject,
-        text,
-        html,
-        attachments
-      });
+  console.log("📧 sendEmail() called");
+  console.log("To:", to);
 
-      console.log('✅ Email sent successfully:', info.messageId);
-      return info;
-
-    } catch (error) {
-      console.error('❌ Failed to send email');
-      console.error(error); // <-- Log the full error object
-      throw error;
-    }
+  if (!transporter) {
+    console.log("❌ Transporter is null");
+    return;
   }
 
-  console.log('⚠️ Email not sent (no transporter configured)');
-  return Promise.resolve({ fallback: true });
+  try {
+    console.log("📨 Sending email...");
+
+    const info = await transporter.sendMail({
+      from: `"${process.env.SMTP_FROM_NAME || 'SafariTix'}" <${smtpFromEmail}>`,
+      to,
+      subject,
+      text,
+      html,
+      attachments
+    });
+
+    console.log("✅ Email sent!");
+    console.log(info);
+
+    return info;
+
+  } catch (err) {
+    console.error("❌ Email error:");
+    console.error(err);
+    throw err;
+  }
 };
 
 const sendSMS = async ({ to, text }) => {
