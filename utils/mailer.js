@@ -27,9 +27,17 @@ try {
         user,
         pass,
       },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 10000,
+
+      logger: true,
+      debug: true,
+
+      connectionTimeout: 30000,
+      greetingTimeout: 30000,
+      socketTimeout: 30000,
+
+      tls: {
+        rejectUnauthorized: false,
+      },
     });
     console.log("✅ Email transporter initialized successfully");
   } else {
