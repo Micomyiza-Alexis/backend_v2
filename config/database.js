@@ -1,33 +1,41 @@
 require("dotenv").config();
+
 const { Sequelize } = require("sequelize");
 
 if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is not set. Create a backend/.env with DATABASE_URL or set the env var.');
+    throw new Error("DATABASE_URL is not set.");
 }
 
-// Allow disabling SSL for local dev via DB_SSL=false
-const useDbSsl = process.env.DB_SSL !== 'false';
+const dbUrl = new URL(process.env.DATABASE_URL);
 
-const sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: 'postgres',
+const sequelize = new Sequelize({
+    dialect: "postgres",
+
+    host: dbUrl.hostname,
+    port: Number(dbUrl.port) || 5432,
+
+    database: decodeURIComponent(dbUrl.pathname.slice(1)),
+    username: decodeURIComponent(dbUrl.username),
+    password: decodeURIComponent(dbUrl.password),
+
     dialectOptions: {
-        ...(useDbSsl ? { 
-            ssl: { 
-                require: true, 
-                rejectUnauthorized: false 
-            } 
-        } : {}),
-        keepAlive: true,
-        statement_timeout: 30000,
-        idle_in_transaction_session_timeout: 30000,
+        ssl: {
+            require: true,
+            rejectUnauthorized: false,
+        },
     },
-    logging: process.env.SEQ_LOGGING === 'true' ? console.log : false,
+
+    logging: process.env.SEQ_LOGGING === "true" ? console.log : false,
+
     pool: {
-        max: 20,
-        min: 0,  // Changed from 5 to 0 to allow lazy connection
+        max: 5,
+        min: 0,
         acquire: 60000,
         idle: 10000,
-        evict: 10000
+    },
+
+    retry: {
+        max: 3,
     },
 });
 

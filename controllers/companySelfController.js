@@ -89,16 +89,47 @@ function normalizeClockTime(value, fieldName) {
 
   throw new Error(`${fieldName} must be in HH:MM or HH:MM:SS format`);
 }
-
 function normalizeScheduleDate(value) {
   if (!value) throw new Error("date is required");
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new Error("date must be a valid date");
-  }
-  return parsed.toISOString().slice(0, 10);
-}
 
+  // Schedule dates are calendar dates, not timestamps.
+  // Keep YYYY-MM-DD exactly as selected.
+  if (typeof value === "string") {
+    const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+
+    if (match) {
+      const [, year, month, day] = match;
+
+      // Validate that it is a real calendar date
+      const check = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day)
+      );
+
+      if (
+        check.getFullYear() !== Number(year) ||
+        check.getMonth() !== Number(month) - 1 ||
+        check.getDate() !== Number(day)
+      ) {
+        throw new Error("date must be a valid date");
+      }
+
+      return `${year}-${month}-${day}`;
+    }
+  }
+
+  // Fallback for actual Date objects
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+
+    return `${year}-${month}-${day}`;
+  }
+
+  throw new Error("date must be a valid date");
+}
 async function getScheduleTimeStorageMode() {
   if (scheduleTimeStorageMode) return scheduleTimeStorageMode;
 
