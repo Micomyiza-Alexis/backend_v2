@@ -24,7 +24,7 @@ const pool = new Pool({
   } : undefined,
   max: 20, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-  connectionTimeoutMillis: 10000, // Increased timeout for initial connection
+  connectionTimeoutMillis: 60000, // Match Sequelize's startup acquisition window
 });
 
 // Handle pool errors
