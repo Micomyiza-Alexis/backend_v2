@@ -349,10 +349,53 @@ const initializeBackgroundTasks = () => {
   const paymentController = require('./controllers/paymentController');
   let cleanupRunning = false;
   let paymentCleanupRunning = false;
+  let recoveryRunning = false;
+  let databaseFailureLogged = false;
+
+  const isConnectionError = (error) => {
+    const message = String(error?.message || error || '').toLowerCase();
+    return error?.name === 'SequelizeConnectionError' ||
+      error?.parent?.code === 'ETIMEDOUT' ||
+      error?.original?.code === 'ETIMEDOUT' ||
+      message.includes('operation timeout') ||
+      message.includes('connection terminated') ||
+      message.includes('connection refused');
+  };
+
+  const markDatabaseUnavailable = (error) => {
+    if (!isConnectionError(error)) return;
+
+    isDatabaseConnected = false;
+    if (!databaseFailureLogged) {
+      console.error('⚠️ Database connection lost; background tasks paused:', error.message || error);
+      databaseFailureLogged = true;
+    }
+  };
+
+  const restoreDatabaseConnection = async () => {
+    if (isDatabaseConnected || recoveryRunning) return isDatabaseConnected;
+
+    recoveryRunning = true;
+    try {
+      await sequelize.authenticate();
+      isDatabaseConnected = true;
+      databaseFailureLogged = false;
+      console.log('✅ Database connection restored; background tasks resumed');
+    } catch (error) {
+      if (!databaseFailureLogged) {
+        console.error('⚠️ Database unavailable; background tasks remain paused:', error.message || error);
+        databaseFailureLogged = true;
+      }
+    } finally {
+      recoveryRunning = false;
+    }
+
+    return isDatabaseConnected;
+  };
   
   // Expire seat locks
   const expireLocks = async () => {
-    if (cleanupRunning) return;
+    if (!isDatabaseConnected || cleanupRunning) return;
     cleanupRunning = true;
     try {
       const now = new Date();
@@ -394,13 +437,14 @@ const initializeBackgroundTasks = () => {
       }
     } catch (err) {
       console.error('expireLocks error', err.message || err);
+      markDatabaseUnavailable(err);
     } finally {
       cleanupRunning = false;
     }
   };
 
   const expirePendingPayments = async () => {
-    if (paymentCleanupRunning) return;
+    if (!isDatabaseConnected || paymentCleanupRunning) return;
     paymentCleanupRunning = true;
     try {
       const expiredCount = await paymentController.expirePendingPayments();
@@ -409,19 +453,22 @@ const initializeBackgroundTasks = () => {
       }
     } catch (err) {
       console.error('expirePendingPayments error', err.message || err);
+      markDatabaseUnavailable(err);
     } finally {
       paymentCleanupRunning = false;
     }
   };
 
   // Run immediately, then every 30 seconds
-  expireLocks().catch((err) => console.error('Initial expireLocks error', err.message || err));
-  expirePendingPayments().catch((err) => console.error('Initial expirePendingPayments error', err.message || err));
+  const runDatabaseTasks = async () => {
+    if (!(await restoreDatabaseConnection())) return;
+    await expireLocks();
+    await expirePendingPayments();
+  };
+
+  runDatabaseTasks().catch((err) => console.error('Initial database task error', err.message || err));
   setInterval(() => {
-    expireLocks().catch((err) => console.error('Scheduled expireLocks error', err.message || err));
-  }, 30 * 1000);
-  setInterval(() => {
-    expirePendingPayments().catch((err) => console.error('Scheduled expirePendingPayments error', err.message || err));
+    runDatabaseTasks().catch((err) => console.error('Scheduled database task error', err.message || err));
   }, 30 * 1000);
   console.log('⏰ Background tasks initialized');
 };

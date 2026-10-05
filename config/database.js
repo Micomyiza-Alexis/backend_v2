@@ -23,6 +23,7 @@ const sequelize = new Sequelize({
             require: true,
             rejectUnauthorized: false,
         },
+        keepAlive: true,
     },
 
     logging: process.env.SEQ_LOGGING === "true" ? console.log : false,

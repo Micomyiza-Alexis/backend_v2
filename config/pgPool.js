@@ -22,6 +22,8 @@ const pool = new Pool({
   ssl: connectionString && connectionString.includes('neon.tech') ? {
     rejectUnauthorized: false, // Required for Neon PostgreSQL
   } : undefined,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
   max: 20, // Maximum number of clients in the pool
   idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
   connectionTimeoutMillis: 60000, // Match Sequelize's startup acquisition window

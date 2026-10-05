@@ -1,5 +1,6 @@
 const { Bus, Driver, User, sequelize, DriverAssignment, Schedule } = require('../models');
 const { Op } = require('sequelize');
+const { ensureBusSeatInventory } = require('./seatInventoryService');
 
 const VALID_LAYOUTS = ['25','30','50'];
 
@@ -69,6 +70,8 @@ const createBus = async (companyId, payload, options = {}) => {
       driver_id: driver_id || null,
       status: 'ACTIVE'
     }, { transaction: t });
+
+    await ensureBusSeatInventory(bus, t);
 
     if (driver_id) {
       await DriverAssignment.create({ bus_id: bus.id, driver_id, company_id: companyId, assigned_by: options.assignedBy || null, assigned_at: new Date() }, { transaction: t });
@@ -163,6 +166,7 @@ const updateBus = async (companyId, id, payload, options = {}) => {
 
     Object.assign(bus, updates);
     await bus.save({ transaction: t });
+    await ensureBusSeatInventory(bus, t);
     console.log('busService.updateBus committed', { busId: bus.id, updates });
     return bus;
   });

@@ -1,37 +1,22 @@
 const pool = require('../config/pgPool');
 
 let liveLocationColumnCache = null;
-const DEMO_SPEED_KMH = 36;
-const DEMO_DURATION_MINUTES = 95;
 const ROUTE_COORDINATE_HINTS = {
-  'kigali': { lat: -1.9441, lng: 30.0619 },
-  'nyabugogo': { lat: -1.9423, lng: 30.0445 },
-  'mukoto': { lat: -1.7552, lng: 30.1162 },
-  'rulindo': { lat: -1.7095, lng: 29.9949 },
+  kigali: { lat: -1.9441, lng: 30.0619 },
+  nyabugogo: { lat: -1.9423, lng: 30.0445 },
+  mukoto: { lat: -1.7552, lng: 30.1162 },
+  rulindo: { lat: -1.7095, lng: 29.9949 },
 };
-
-const normalizePlaceName = (value) =>
-  String(value || '')
-    .toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
+const normalizePlaceName = (value) => String(value || '').toLowerCase().replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
 const resolveRoutePoint = (name, fallback) => {
   const normalized = normalizePlaceName(name);
   if (!normalized) return fallback || null;
-
   const direct = ROUTE_COORDINATE_HINTS[normalized];
   if (direct) return direct;
-
   const partial = Object.entries(ROUTE_COORDINATE_HINTS).find(([key]) => normalized.includes(key));
-  if (partial) return partial[1];
-
-  return fallback || null;
+  return partial ? partial[1] : (fallback || null);
 };
-
 const toRadians = (degrees) => (Number(degrees || 0) * Math.PI) / 180;
-
 const calculateDistanceKm = (from, to) => {
   if (!from || !to) return null;
   const earthRadiusKm = 6371;
@@ -39,52 +24,9 @@ const calculateDistanceKm = (from, to) => {
   const longitudeDelta = toRadians(to.lng - from.lng);
   const fromLat = toRadians(from.lat);
   const toLat = toRadians(to.lat);
-
-  const a =
-    Math.sin(latitudeDelta / 2) * Math.sin(latitudeDelta / 2) +
-    Math.cos(fromLat) * Math.cos(toLat) *
-    Math.sin(longitudeDelta / 2) * Math.sin(longitudeDelta / 2);
-
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return earthRadiusKm * c;
+  const a = Math.sin(latitudeDelta / 2) ** 2 + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(longitudeDelta / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 };
-
-const buildDemoLocation = ({ fromName, toName, scheduleDate, departureTime, scheduleId }) => {
-  const fallbackStart = ROUTE_COORDINATE_HINTS.kigali;
-  const fallbackEnd = ROUTE_COORDINATE_HINTS.nyabugogo;
-  const fromPoint = resolveRoutePoint(fromName, fallbackStart);
-  const toPoint = resolveRoutePoint(toName, fallbackEnd);
-
-  const departureIso = scheduleDate
-    ? `${String(scheduleDate).slice(0, 10)}T${String(departureTime || '08:00').slice(0, 5)}:00`
-    : null;
-  const departureTimestamp = departureIso ? new Date(departureIso).getTime() : Date.now() - 15 * 60 * 1000;
-  const elapsedMs = Math.max(0, Date.now() - (Number.isFinite(departureTimestamp) ? departureTimestamp : Date.now()));
-  const totalMs = DEMO_DURATION_MINUTES * 60 * 1000;
-  const progress = Math.min(1, elapsedMs / totalMs);
-
-  const lat = fromPoint.lat + (toPoint.lat - fromPoint.lat) * progress;
-  const lng = fromPoint.lng + (toPoint.lng - fromPoint.lng) * progress;
-  const remainingKm = calculateDistanceKm({ lat, lng }, toPoint);
-  const etaMinutes = remainingKm !== null ? (remainingKm / DEMO_SPEED_KMH) * 60 : null;
-
-  return {
-    scheduleId,
-    latitude: lat,
-    longitude: lng,
-    speed: DEMO_SPEED_KMH,
-    heading: null,
-    timestamp: new Date().toISOString(),
-    source: 'demo_simulation',
-    destination: toPoint,
-    distanceRemainingKm: remainingKm,
-    etaMinutes,
-    currentLocationLabel: fromName && toName
-      ? `Between ${fromName} and ${toName}`
-      : 'On route',
-  };
-};
-
 function emitTrackingLocation(trip, storedLocation) {
   try {
     const { getIO } = require('../config/socket');
@@ -314,9 +256,7 @@ async function getLatestLocationForSchedule(client, schedule) {
   if (colMap.hasScheduleId && schedule.schedule_id) {
     params.push(schedule.schedule_id);
     whereClauses.push(`l.schedule_id::text = $${params.length}::text`);
-  }
-
-  if (colMap.hasBusId && schedule.bus_id) {
+  } else if (colMap.hasBusId && schedule.bus_id) {
     params.push(schedule.bus_id);
     whereClauses.push(`l.bus_id::text = $${params.length}::text`);
   }
@@ -892,9 +832,7 @@ const getScheduleLocation = async (req, res) => {
       if (colMap.hasScheduleId) {
         params.push(schedule.schedule_id);
         whereClauses.push(`l.schedule_id::text = $${params.length}::text`);
-      }
-
-      if (colMap.hasBusId && schedule.bus_id) {
+      } else if (colMap.hasBusId && schedule.bus_id) {
         params.push(schedule.bus_id);
         whereClauses.push(`l.bus_id::text = $${params.length}::text`);
       }
@@ -980,14 +918,18 @@ const getScheduleLocation = async (req, res) => {
 /**
  * Get bus tracking details by booking/ticket id.
  * GET /api/tracking/booking/:bookingId/location
- * For demo mode, returns simulated movement if no live GPS exists.
+ * Returns live movement only; no location is fabricated when GPS is absent.
  */
 const getBookingLocation = async (req, res) => {
   let client;
   try {
     const { bookingId } = req.params;
+    const userId = req.userId;
     if (!bookingId) {
       return res.status(400).json({ error: 'bookingId is required' });
+    }
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
     client = await pool.connect();
@@ -1012,10 +954,11 @@ const getBookingLocation = async (req, res) => {
         LEFT JOIN bus_schedules bs ON bs.schedule_id::text = t.schedule_id::text
         LEFT JOIN rura_routes rr ON rr.id::text = bs.route_id::text
         LEFT JOIN buses b ON b.id = COALESCE(s.bus_id, bs.bus_id)
-        WHERE t.id::text = $1::text OR t.booking_ref = $1
+        WHERE (t.id::text = $1::text OR t.booking_ref = $1)
+          AND t.passenger_id::text = $2::text
         LIMIT 1
       `,
-      [bookingId]
+      [bookingId, userId]
     );
 
     const ticket = ticketResult.rows[0];
@@ -1082,17 +1025,10 @@ const getBookingLocation = async (req, res) => {
       });
     }
 
-    const simulated = buildDemoLocation({
-      fromName: ticket.route_from,
-      toName: ticket.route_to,
-      scheduleDate: ticket.schedule_date,
-      departureTime: ticket.departure_time,
-      scheduleId: ticket.schedule_id,
-    });
-
     return res.json({
       success: true,
-      demo: true,
+      demo: false,
+      trackingAvailable: false,
       booking: {
         id: ticket.id,
         bookingRef: ticket.booking_ref,
@@ -1104,18 +1040,10 @@ const getBookingLocation = async (req, res) => {
         to: ticket.route_to,
         seat: ticket.seat_number,
       },
-      location: {
-        latitude: simulated.latitude,
-        longitude: simulated.longitude,
-        speed: simulated.speed,
-        heading: simulated.heading,
-        timestamp: simulated.timestamp,
-        source: simulated.source,
-        currentLocationLabel: simulated.currentLocationLabel,
-      },
+      location: null,
       calculations: {
-        distanceRemainingKm: simulated.distanceRemainingKm,
-        etaMinutes: simulated.etaMinutes,
+        distanceRemainingKm: null,
+        etaMinutes: null,
       },
     });
   } catch (error) {

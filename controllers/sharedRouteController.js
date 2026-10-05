@@ -15,6 +15,26 @@ const toInt = (value, fallback = 0) => {
   return Number.isFinite(n) ? Math.trunc(n) : fallback;
 };
 
+const normalizeScheduleDate = (value) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw Object.assign(new Error('Schedule date must be in YYYY-MM-DD format'), { statusCode: 400 });
+  }
+
+  const [, year, month, day] = match;
+  const parsed = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    parsed.getUTCFullYear() !== Number(year) ||
+    parsed.getUTCMonth() !== Number(month) - 1 ||
+    parsed.getUTCDate() !== Number(day)
+  ) {
+    throw Object.assign(new Error('Schedule date is invalid'), { statusCode: 400 });
+  }
+
+  return raw;
+};
+
 const hasScheduleDeparturePassed = async (client, dateValue, timeValue) => {
   if (!dateValue || !timeValue) return false;
 
@@ -290,28 +310,13 @@ const getLatestGuestLocationForBooking = async (
     };
   }
 
-  const simulated = buildGuestDemoLocation({
-    fromName: routeFrom,
-    toName: routeTo,
-    scheduleDate,
-    departureTime,
-    scheduleId,
-  });
-
   return {
-    demo: true,
-    location: {
-      latitude: simulated.latitude,
-      longitude: simulated.longitude,
-      speed: simulated.speed,
-      heading: simulated.heading,
-      timestamp: simulated.timestamp,
-      source: simulated.source,
-      currentLocationLabel: simulated.currentLocationLabel,
-    },
+    demo: false,
+    trackingAvailable: false,
+    location: null,
     calculations: {
-      distanceRemainingKm: simulated.distanceRemainingKm,
-      etaMinutes: simulated.etaMinutes,
+      distanceRemainingKm: null,
+      etaMinutes: null,
     },
   };
 };
@@ -622,12 +627,10 @@ const createSharedSchedule = async (req, res) => {
   try {
     const { bus_id, route_id, date, time, capacity } = req.body;
     if (!bus_id || !route_id || !date || !time) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "bus_id, route_id, date and time are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "bus_id, route_id, date and time are required",
+      });
     }
     if (!isValidDate(date)) {
       return res.status(400).json({ success: false, message: "Invalid date" });
@@ -687,23 +690,19 @@ const createSharedSchedule = async (req, res) => {
     }
 
     if (String(routeResult.rows[0].status || "").toLowerCase() !== "active") {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Only active routes can be scheduled",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Only active routes can be scheduled",
+      });
     }
 
     const scheduleCapacity = toInt(capacity, toInt(bus.capacity, 0));
 
     if (scheduleCapacity <= 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Schedule capacity must be greater than zero",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Schedule capacity must be greater than zero",
+      });
     }
 
     const tableName = await getScheduleTableName(client);
@@ -764,12 +763,10 @@ const createSharedSchedule = async (req, res) => {
     return res.status(201).json({ success: true, schedule: inserted.rows[0] });
   } catch (error) {
     console.error("createSharedSchedule error:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: error.message || "Failed to create schedule",
-      });
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to create schedule",
+    });
   } finally {
     if (client) client.release();
   }
@@ -893,12 +890,10 @@ const searchSharedSchedules = async (req, res) => {
     const toStop = (req.query.to_stop || "").toString().trim();
 
     if (!routeId || !date || !fromStop || !toStop) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "route_id, date, from_stop and to_stop are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "route_id, date, from_stop and to_stop are required",
+      });
     }
     if (!isValidDate(date)) {
       return res.status(400).json({ success: false, message: "Invalid date" });
@@ -907,12 +902,10 @@ const searchSharedSchedules = async (req, res) => {
     client = await pool.connect();
     const routeStops = await getStopsByRoute(client, routeId);
     if (routeStops.length < 2) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Route has insufficient stops configured",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Route has insufficient stops configured",
+      });
     }
 
     const fromSeq = findStopSequence(routeStops, fromStop);
@@ -1100,8 +1093,8 @@ const searchTrips = async (req, res) => {
                 bs.schedule_id,
                 bs.bus_id,
                 bs.route_id,
-                bs.date,
-                bs.time,
+                bs.date::text AS date,
+                bs.time::text AS time,
                 bs.capacity,
                 COALESCE(bs.status, 'scheduled') AS status,
                 b.plate_number,
@@ -1120,8 +1113,8 @@ const searchTrips = async (req, res) => {
                 bs.id AS schedule_id,
                 bs.bus_id,
                 bs.route_id,
-                bs.schedule_date AS date,
-                bs.departure_time AS time,
+                bs.schedule_date::text AS date,
+                bs.departure_time::text AS time,
                 COALESCE(bs.total_seats, bs.available_seats + bs.booked_seats) AS capacity,
                 COALESCE(bs.status, 'scheduled') AS status,
                 b.plate_number,
@@ -1174,7 +1167,14 @@ const searchTrips = async (req, res) => {
         `${selectPart} WHERE ${whereConditions.join(" AND ")} ORDER BY ${orderCol} ASC`,
         queryParams,
       );
-
+      console.log("SEARCH DEBUG:", {
+        routeId: routeMatch.route_id,
+        from: routeMatch.from_stop,
+        to: routeMatch.to_stop,
+        requestedDate: date,
+        schedulesFound: schedulesResult.rows.length,
+        schedules: schedulesResult.rows,
+      });
       if (!schedulesResult.rows.length) continue;
 
       // Step 3: Determine segment price
@@ -1207,21 +1207,45 @@ const searchTrips = async (req, res) => {
           routeMatch.from_stop,
           routeMatch.to_stop,
         );
+        const seatInventoryResult = await client.query(
+          `SELECT seat_number FROM seats
+           WHERE bus_id::text = $1::text
+             AND COALESCE(is_driver, false) = false
+           ORDER BY seat_number`,
+          [schedule.bus_id],
+        );
         const capacity = toInt(schedule.capacity, 0);
+        const bookableSeats = seatInventoryResult.rows
+          .map((row) => Number(row.seat_number))
+          .filter((seat) => Number.isInteger(seat)
+            && seat >= 1
+            && seat <= capacity
+            && !occupancy.occupiedSeats.has(String(seat)));
         const availableSeats = Math.max(
-          capacity - occupancy.occupiedSeats.size,
+          bookableSeats.length,
           0,
         );
-        if (availableSeats <= 0) continue;
-
-        const seatOptions = [];
-        for (let seat = 1; seat <= capacity; seat += 1) {
-          if (!occupancy.occupiedSeats.has(String(seat)))
-            seatOptions.push(seat);
+        if (availableSeats <= 0) {
+          console.warn("SEARCH EXCLUDED SCHEDULE", {
+            scheduleId: schedule.schedule_id,
+            reason: seatInventoryResult.rows.length === 0
+              ? "NO_PHYSICAL_SEAT_INVENTORY"
+              : "NO_BOOKABLE_SEATS_FOR_SEGMENT",
+            requestedDate: date || null,
+            scheduleDate: schedule.date,
+            departureTime: schedule.time,
+            capacity,
+            physicalSeatRows: seatInventoryResult.rows.length,
+            occupiedSeats: Array.from(occupancy.occupiedSeats),
+          });
+          continue;
         }
 
+        const seatOptions = [];
+        seatOptions.push(...bookableSeats);
+
         const departureDate = schedule.date
-          ? String(schedule.date).slice(0, 10)
+          ? normalizeScheduleDate(schedule.date)
           : null;
         const departureTime = schedule.time
           ? String(schedule.time).slice(0, 5)
@@ -1278,12 +1302,10 @@ const getAvailableSeats = async (req, res) => {
     const toStop = (req.query.to || req.query.to_stop || "").toString().trim();
 
     if (!scheduleId || !fromStop || !toStop) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "schedule_id, from and to are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "schedule_id, from and to are required",
+      });
     }
 
     client = await pool.connect();
@@ -1293,8 +1315,11 @@ const getAvailableSeats = async (req, res) => {
         ? `
             SELECT
               bs.schedule_id,
+              bs.bus_id,
               bs.route_id,
               bs.capacity,
+              bs.date,
+              bs.time,
               COALESCE(bs.status, 'scheduled') AS status
             FROM bus_schedules bs
             WHERE bs.schedule_id::text = $1::text
@@ -1302,8 +1327,11 @@ const getAvailableSeats = async (req, res) => {
         : `
             SELECT
               bs.id AS schedule_id,
+              bs.bus_id,
               bs.route_id,
               COALESCE(bs.total_seats, bs.available_seats + bs.booked_seats) AS capacity,
+              bs.schedule_date AS date,
+              bs.departure_time AS time,
               COALESCE(bs.status, 'scheduled') AS status
             FROM schedules bs
             WHERE bs.id::text = $1::text
@@ -1348,21 +1376,27 @@ const getAvailableSeats = async (req, res) => {
       occupancy.toSeq < 0 ||
       occupancy.fromSeq >= occupancy.toSeq
     ) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Dropoff must be after pickup on the same route",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Dropoff must be after pickup on the same route",
+      });
     }
 
     const capacity = toInt(schedule.capacity, 0);
-    const seatNumbers = [];
-    for (let seat = 1; seat <= capacity; seat += 1) {
-      if (!occupancy.occupiedSeats.has(String(seat))) {
-        seatNumbers.push(seat);
-      }
-    }
+    // Use the same seat inventory that bookMobileTicket validates. Building
+    // 1..capacity here can expose phantom seats when the bus inventory is
+    // incomplete, or expose a driver seat as commuter-selectable.
+    const seatInventory = await client.query(
+      `SELECT seat_number
+       FROM seats
+       WHERE bus_id::text = $1::text
+         AND COALESCE(is_driver, false) = false
+       ORDER BY seat_number`,
+      [schedule.bus_id],
+    );
+    const seatNumbers = seatInventory.rows
+      .map((row) => Number(row.seat_number))
+      .filter((seat) => Number.isInteger(seat) && seat >= 1 && seat <= capacity && !occupancy.occupiedSeats.has(String(seat)));
 
     res.json({
       success: true,
@@ -1420,12 +1454,10 @@ const bookSharedTicket = async (req, res) => {
       payment_id,
     } = req.body;
     if (!schedule_id || !from_stop || !to_stop) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "schedule_id, from_stop and to_stop are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "schedule_id, from_stop and to_stop are required",
+      });
     }
 
     // STRICT RULE ENFORCEMENT: Tickets can only be created after payment is PAID
@@ -1576,12 +1608,10 @@ const bookSharedTicket = async (req, res) => {
     const capacity = toInt(schedule.capacity, 0);
     if (occupancy.occupiedSeats.size >= capacity) {
       await client.query("ROLLBACK");
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "No seats available for selected segment",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "No seats available for selected segment",
+      });
     }
 
     const seatInventory = await client.query(
@@ -1608,12 +1638,10 @@ const bookSharedTicket = async (req, res) => {
         parsedSeat > capacity
       ) {
         await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Selected seat_number is out of range",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Selected seat_number is out of range",
+        });
       }
     }
 
@@ -1626,12 +1654,10 @@ const bookSharedTicket = async (req, res) => {
 
     if (selectedSeat && occupancy.occupiedSeats.has(selectedSeat)) {
       await client.query("ROLLBACK");
-      return res
-        .status(409)
-        .json({
-          success: false,
-          message: "Selected seat is not available for this segment",
-        });
+      return res.status(409).json({
+        success: false,
+        message: "Selected seat is not available for this segment",
+      });
     }
 
     if (!selectedSeat) {
@@ -1649,12 +1675,10 @@ const bookSharedTicket = async (req, res) => {
 
     if (!selectedSeat) {
       await client.query("ROLLBACK");
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "No passenger seats available for selected segment",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "No passenger seats available for selected segment",
+      });
     }
 
     const passengerId = req.userId || req.body.passenger_id || null;
@@ -1714,12 +1738,10 @@ const bookSharedTicket = async (req, res) => {
       !insertCols.includes("seat_number")
     ) {
       await client.query("ROLLBACK");
-      return res
-        .status(500)
-        .json({
-          success: false,
-          message: "Tickets schema missing required columns for shared booking",
-        });
+      return res.status(500).json({
+        success: false,
+        message: "Tickets schema missing required columns for shared booking",
+      });
     }
 
     const returnCols = ["schedule_id", "seat_number"];
@@ -1883,6 +1905,9 @@ const bookSharedTicket = async (req, res) => {
   }
 };
 
+// Deprecated and intentionally unreachable: the old mobile payment shortcut
+// created paid payments without provider confirmation. The route was removed;
+// keep this name only for migration visibility in older deployments.
 const confirmMobilePayment = async (req, res) => {
   let client;
   try {
@@ -2052,12 +2077,10 @@ const confirmMobilePayment = async (req, res) => {
     const capacity = toInt(schedule.capacity, 0);
     if (occupancy.occupiedSeats.size >= capacity) {
       await client.query("ROLLBACK");
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "No seats available for selected segment",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "No seats available for selected segment",
+      });
     }
 
     const seatInventory = await client.query(
@@ -2168,22 +2191,18 @@ const confirmMobilePayment = async (req, res) => {
         parsedSeat > capacity
       ) {
         await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: `Seat ${selectedSeat} is out of range`,
-          });
+        return res.status(400).json({
+          success: false,
+          message: `Seat ${selectedSeat} is out of range`,
+        });
       }
 
       if (seatMetaByNumber.get(selectedSeat) === true) {
         await client.query("ROLLBACK");
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: `Seat ${selectedSeat} cannot be booked`,
-          });
+        return res.status(400).json({
+          success: false,
+          message: `Seat ${selectedSeat} cannot be booked`,
+        });
       }
 
       if (occupiedSeats.has(selectedSeat)) {
@@ -2240,12 +2259,10 @@ const confirmMobilePayment = async (req, res) => {
         !insertCols.includes("payment_id")
       ) {
         await client.query("ROLLBACK");
-        return res
-          .status(500)
-          .json({
-            success: false,
-            message: "Tickets schema is missing required columns",
-          });
+        return res.status(500).json({
+          success: false,
+          message: "Tickets schema is missing required columns",
+        });
       }
 
       const ticketResult = await client.query(
@@ -2362,6 +2379,112 @@ const confirmMobilePayment = async (req, res) => {
   }
 };
 
+// MVP-only instant booking adapter. This deliberately skips external payment
+// and does not create a fake payment record. The real provider flow remains in
+// paymentController and can replace this adapter later.
+const bookMobileTicket = async (req, res) => {
+  let client;
+  try {
+    const userId = req.userId;
+    const scheduleId = String(req.body.schedule_id || req.body.scheduleId || '').trim();
+    const fromStop = String(req.body.from_stop || req.body.from || '').trim();
+    const toStop = String(req.body.to_stop || req.body.to || '').trim();
+    const seatNumbers = Array.from(new Set((Array.isArray(req.body.seat_numbers) ? req.body.seat_numbers : [req.body.seat_number])
+      .map((seat) => String(seat || '').trim()).filter(Boolean)));
+    const idempotencyKey = String(req.get('Idempotency-Key') || req.body.idempotency_key || '').trim();
+
+    if (!userId) return res.status(401).json({ success: false, message: 'Authentication required' });
+    if (!scheduleId || !fromStop || !toStop || seatNumbers.length !== 1) {
+      return res.status(400).json({ success: false, message: 'schedule_id, from_stop, to_stop and one seat_number are required' });
+    }
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return res.status(400).json({ success: false, message: 'Idempotency-Key is required' });
+    }
+
+    const crypto = require('crypto');
+    const bookingRef = `MVP-${crypto.createHash('sha256').update(`${userId}:${idempotencyKey}`).digest('hex').slice(0, 28).toUpperCase()}`;
+    client = await pool.connect();
+    await client.query('BEGIN');
+
+    const scheduleTable = await getScheduleTableName(client);
+    const scheduleResult = await client.query(scheduleTable === 'bus_schedules' ? `
+      SELECT bs.schedule_id, bs.bus_id, bs.route_id, COALESCE(bs.company_id, b.company_id) AS company_id, bs.date::text AS date, bs.time::text AS time, bs.capacity,
+             COALESCE(bs.status, 'scheduled') AS status, b.status AS bus_status, b.plate_number
+      FROM bus_schedules bs INNER JOIN buses b ON b.id = bs.bus_id
+      WHERE bs.schedule_id::text = $1::text FOR UPDATE` : `
+      SELECT s.id AS schedule_id, s.bus_id, s.route_id, COALESCE(s.company_id, b.company_id) AS company_id, s.schedule_date::text AS date,
+             s.departure_time::text AS time, COALESCE(s.total_seats, s.available_seats + s.booked_seats) AS capacity,
+             COALESCE(s.status, 'scheduled') AS status, b.status AS bus_status, b.plate_number
+      FROM schedules s INNER JOIN buses b ON b.id = s.bus_id
+      WHERE s.id::text = $1::text FOR UPDATE`, [scheduleId]);
+
+    if (!scheduleResult.rows.length) throw Object.assign(new Error('Trip is no longer available'), { statusCode: 404 });
+    const schedule = scheduleResult.rows[0];
+    // The schedule is authoritative. Normalize and validate its DATE value
+    // before any ticket INSERT can reach PostgreSQL.
+    schedule.date = normalizeScheduleDate(schedule.date);
+
+    const existing = await client.query('SELECT * FROM tickets WHERE booking_ref = $1 AND passenger_id::text = $2::text LIMIT 1', [bookingRef, userId]);
+    if (existing.rows.length) {
+      await client.query('COMMIT');
+      const existingTicket = serializeMobileTicket(existing.rows[0], schedule, fromStop, toStop);
+      existingTicket.qrData = { bookingId: bookingRef, bookingRef, ticketId: existing.rows[0].id, ticketNumber: bookingRef, from: fromStop, to: toStop, seatNumber: existing.rows[0].seat_number, seatNumbers: [String(existing.rows[0].seat_number)], date: schedule.date, bus: schedule.plate_number || null, userId };
+      return res.json({ success: true, booking: { bookingId: bookingRef, booking_ref: bookingRef }, tickets: [existingTicket], qrData: existingTicket.qrData, qrCodeUrl: existing.rows[0].qr_code_url || null, idempotent: true });
+    }
+
+    if (String(schedule.status).toLowerCase() === 'cancelled' || String(schedule.bus_status).toLowerCase() !== 'active') {
+      throw Object.assign(new Error('Trip is no longer available'), { statusCode: 400 });
+    }
+    if (await hasScheduleDeparturePassed(client, schedule.date, schedule.time)) {
+      throw Object.assign(new Error('Trip is no longer available'), { statusCode: 400 });
+    }
+
+    const routeStops = await getStopsByRoute(client, schedule.route_id);
+    const occupancy = await getScheduleOccupancy(client, schedule.schedule_id, routeStops, fromStop, toStop);
+    if (occupancy.fromSeq < 0 || occupancy.toSeq < 0 || occupancy.fromSeq >= occupancy.toSeq) {
+      throw Object.assign(new Error('Invalid boarding segment'), { statusCode: 400 });
+    }
+
+    const seat = seatNumbers[0];
+    const seatInventory = await client.query('SELECT seat_number, COALESCE(is_driver, false) AS is_driver FROM seats WHERE bus_id::text = $1::text AND seat_number::text = $2::text', [schedule.bus_id, seat]);
+    if (!seatInventory.rows.length || seatInventory.rows[0].is_driver) {
+      throw Object.assign(new Error(`Seat ${seat} cannot be booked`), { statusCode: 400 });
+    }
+    if (occupancy.occupiedSeats.has(seat)) {
+      throw Object.assign(new Error('That seat is no longer available'), { statusCode: 409 });
+    }
+
+    const price = await getSegmentFare(client, fromStop, toStop, schedule.date);
+    if (price === null) throw Object.assign(new Error('No active fare found for this trip segment'), { statusCode: 400 });
+
+    const ticketColumns = await getTableColumns(client, 'tickets');
+    const qrData = { bookingId: bookingRef, bookingRef, ticketNumber: bookingRef, from: fromStop, to: toStop, seatNumber: seat, seatNumbers: [seat], date: schedule.date, bus: schedule.plate_number || null, userId };
+    const values = { id: crypto.randomUUID(), passenger_id: userId, schedule_id: schedule.schedule_id, company_id: schedule.company_id || null, route_id: schedule.route_id, trip_date: schedule.date, from_stop: fromStop, to_stop: toStop, from_sequence: occupancy.fromSeq, to_sequence: occupancy.toSeq, seat_number: seat, price, status: 'CONFIRMED', booking_ref: bookingRef, payment_id: null, passenger_name: req.user?.full_name || req.user?.name || null, booked_at: new Date(), created_at: new Date(), updated_at: new Date() };
+    const insertColumns = Object.keys(values).filter((column) => ticketColumns.has(column));
+    const insertParams = insertColumns.map((column) => values[column]);
+    const placeholders = insertColumns.map((_, index) => `$${index + 1}`).join(', ');
+    const ticketResult = await client.query(`INSERT INTO tickets (${insertColumns.join(', ')}) VALUES (${placeholders}) RETURNING *`, insertParams);
+    const ticket = ticketResult.rows[0];
+    const qrCodeUrl = await QRCode.toDataURL(JSON.stringify(qrData), { errorCorrectionLevel: 'M', margin: 1, width: 220 });
+    if (ticketColumns.has('qr_code_url')) await client.query('UPDATE tickets SET qr_code_url = $1, updated_at = NOW() WHERE id = $2', [qrCodeUrl, ticket.id]);
+    ticket.qr_code_url = qrCodeUrl;
+    await client.query('COMMIT');
+    return res.status(201).json({ success: true, booking: { bookingId: bookingRef, booking_ref: bookingRef, from: fromStop, to: toStop, seats: [seat], departure_date: schedule.date, departure_time: String(schedule.time).slice(0, 5), bus_plate: schedule.plate_number || null }, tickets: [{ ...serializeMobileTicket(ticket, schedule, fromStop, toStop), qrData, qrCodeUrl }], qrData, qrCodeUrl });
+  } catch (error) {
+    if (client) { try { await client.query('ROLLBACK'); } catch {} }
+    return res.status(error.statusCode || (error.code === '23505' ? 409 : 500)).json({ success: false, message: error.message || 'Failed to book ticket' });
+  } finally { if (client) client.release(); }
+};
+
+const serializeMobileTicket = (ticket, schedule, fromStop, toStop) => ({
+  id: ticket.id, ticketId: ticket.id, bookingId: ticket.booking_ref, bookingRef: ticket.booking_ref,
+  booking_ref: ticket.booking_ref, ticketNumber: ticket.booking_ref, seat_number: ticket.seat_number,
+  seatNumber: ticket.seat_number, routeFrom: ticket.from_stop || fromStop, routeTo: ticket.to_stop || toStop,
+  departureDate: ticket.trip_date || (schedule.date ? String(schedule.date).slice(0, 10) : null),
+  departureTime: schedule.time ? String(schedule.time).slice(0, 5) : null, busPlate: schedule.plate_number || null,
+  scheduleId: schedule.schedule_id, status: ticket.status, qrCodeUrl: ticket.qr_code_url || null,
+});
+
 const getGuestTickets = async (req, res) => {
   let client;
   try {
@@ -2442,6 +2565,34 @@ const getGuestTickets = async (req, res) => {
       );
     }
 
+    // MVP instant bookings intentionally have payment_id = NULL. Resolve
+    // those real tickets directly by booking_ref and authenticated account
+    // email so the existing guest-ticket contract can still read them.
+    if (!bookingResult.rows.length) {
+      bookingResult = await client.query(
+        `
+          SELECT
+            t.id AS instant_ticket_id,
+            t.booking_ref AS booking_id,
+            t.booking_ref AS transaction_ref,
+            t.price AS amount,
+            'confirmed' AS booking_status,
+            'skipped' AS payment_status,
+            t.schedule_id,
+            u.id AS passenger_id,
+            u.full_name AS passenger_name,
+            u.email AS passenger_email,
+            u.phone_number AS passenger_phone
+          FROM tickets t
+          INNER JOIN users u ON u.id = t.passenger_id
+          WHERE LOWER(t.booking_ref) = LOWER($1)
+            AND LOWER(u.email) = LOWER($2)
+          LIMIT 1
+        `,
+        [bookingLookup, email],
+      );
+    }
+
     if (!bookingResult.rows.length) {
       return res.status(404).json({
         success: false,
@@ -2474,12 +2625,12 @@ const getGuestTickets = async (req, res) => {
         LEFT JOIN routes r ON r.id = s.route_id
         LEFT JOIN rura_routes rr ON rr.id::text = bs.route_id::text
         LEFT JOIN buses b ON b.id = COALESCE(s.bus_id, bs.bus_id)
-        WHERE t.payment_id::text = $1::text
+        WHERE ${booking.instant_ticket_id ? '(t.id::text = $2::text OR t.payment_id::text = $1::text)' : 't.payment_id::text = $1::text'}
         ORDER BY
           CASE WHEN t.seat_number ~ '^[0-9]+$' THEN t.seat_number::int END ASC NULLS LAST,
           t.created_at ASC
       `,
-      [booking.booking_id],
+      booking.instant_ticket_id ? [booking.booking_id, booking.instant_ticket_id] : [booking.booking_id],
     );
 
     const tickets = ticketResult.rows.map((ticket) => {
@@ -2732,13 +2883,15 @@ const getUserTickets = async (req, res) => {
           t.booking_ref,
           t.price,
           t.status,
+          t.payment_id,
+          t.qr_code_url,
           t.from_stop,
           t.to_stop,
           t.created_at,
           t.booked_at,
           t.schedule_id,
-          bs.date         AS schedule_date,
-          bs.time         AS departure_time,
+          bs.date::text   AS schedule_date,
+          bs.time::text   AS departure_time,
           b.plate_number  AS bus_plate,
           rr.from_location,
           rr.to_location
@@ -2758,8 +2911,11 @@ const getUserTickets = async (req, res) => {
       scheduleId: row.schedule_id,
       seat_number: row.seat_number,
       booking_ref: row.booking_ref,
+      bookingRef: row.booking_ref,
+      ticketNumber: row.booking_ref,
       price: row.price !== null ? Number(row.price) : null,
       status: row.status || "CONFIRMED",
+      payment_id: row.payment_id || null,
       from_stop: row.from_stop || row.from_location || "N/A",
       to_stop: row.to_stop || row.to_location || "N/A",
       schedule_date: row.schedule_date
@@ -2769,6 +2925,17 @@ const getUserTickets = async (req, res) => {
         ? String(row.departure_time).slice(0, 5)
         : null,
       bus_plate: row.bus_plate || "N/A",
+      busPlate: row.bus_plate || "N/A",
+      fromStop: row.from_stop || row.from_location || "N/A",
+      toStop: row.to_stop || row.to_location || "N/A",
+      departureDate: row.schedule_date
+        ? String(row.schedule_date).slice(0, 10)
+        : null,
+      departureTime: row.departure_time
+        ? String(row.departure_time).slice(0, 5)
+        : null,
+      qr_code_url: row.qr_code_url || null,
+      qrCodeUrl: row.qr_code_url || null,
       created_at: row.created_at || row.booked_at,
     }));
     res.json({ success: true, tickets });
@@ -2794,7 +2961,7 @@ module.exports = {
   getAvailableSeats,
   bookTicket,
   bookSharedTicket,
-  confirmMobilePayment,
+  bookMobileTicket,
   getGuestTickets,
   getGuestBookingLocation,
   getUserTickets,
