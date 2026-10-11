@@ -5,6 +5,7 @@
 
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
+const { randomUUID } = require('crypto');
 const pool = require('./pgPool');
 
 let io;
@@ -124,10 +125,10 @@ async function persistLiveLocationSample(client, scheduleId, latitude, longitude
   });
 
   const result = await client.query(
-    `INSERT INTO live_bus_locations (schedule_id, latitude, longitude, speed, heading, recorded_at, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, NOW(), NOW(), NOW())
+    `INSERT INTO live_bus_locations (id, schedule_id, latitude, longitude, speed, heading, recorded_at, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW(), NOW())
      RETURNING schedule_id, latitude, longitude, speed, heading, recorded_at`,
-    [scheduleId, latitude, longitude, speed || null, heading || null]
+    [randomUUID(), scheduleId, latitude, longitude, speed || null, heading || null]
   );
 
   if (result.rows[0]) {

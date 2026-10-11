@@ -1,4 +1,5 @@
 const pool = require('../config/pgPool');
+const { randomUUID } = require('crypto');
 
 let liveLocationColumnCache = null;
 const ROUTE_COORDINATE_HINTS = {
@@ -202,9 +203,11 @@ async function storeLiveLocation(client, scheduleId, latitude, longitude, speed,
     source: 'rest',
   });
 
-  const columns = ['schedule_id', 'latitude', 'longitude', 'speed', 'heading', 'recorded_at'];
-  const placeholders = ['$1', '$2', '$3', '$4', '$5', 'NOW()'];
-  const values = [scheduleId, latitude, longitude, speed, heading];
+  // Some deployed databases predate the id default in the migration. Generate
+  // the sample id in the application so driver updates never insert NULL.
+  const columns = ['id', 'schedule_id', 'latitude', 'longitude', 'speed', 'heading', 'recorded_at'];
+  const placeholders = ['$1', '$2', '$3', '$4', '$5', '$6', 'NOW()'];
+  const values = [randomUUID(), scheduleId, latitude, longitude, speed, heading];
 
   if (colMap.hasCreatedAt) {
     columns.push('created_at');
