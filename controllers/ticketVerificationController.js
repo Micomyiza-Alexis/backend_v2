@@ -530,6 +530,13 @@ const validateTicket = async (req, res) => {
     const bookingFromQr = parsed.booking || null;
     const currentTripId = String(tripId || scheduleId || '').trim();
 
+    // Safe development diagnostic: identifiers only, never auth or passenger data.
+    console.info('[validateTicket] identifier comparison', {
+      ticketIdentifier: ticketIdentifier ? String(ticketIdentifier) : null,
+      qrTripId: qrTripId || null,
+      currentTripId: currentTripId || null,
+    });
+
     if (!ticketIdentifier) {
       return res.status(400).json({
         valid: false,
@@ -584,6 +591,13 @@ const validateTicket = async (req, res) => {
 
     const ticket = ticketQuery.rows[0];
     const ticketTripId = String(ticket.schedule_id || '').trim();
+
+    console.info('[validateTicket] persisted ticket comparison', {
+      ticketIdentifier: String(ticket.id),
+      ticketTripId: ticketTripId || null,
+      currentTripId: currentTripId || null,
+      qrTripId: qrTripId || null,
+    });
 
     if (currentTripId && ticketTripId && ticketTripId !== currentTripId) {
       await client.query('ROLLBACK');
