@@ -385,15 +385,25 @@ const updateDriverLocation = async (req, res) => {
   try {
     const userId = req.userId; // From auth middleware
     const { scheduleId, bus_id, latitude, longitude, speed, heading } = req.body;
+    const numericLatitude = Number(latitude);
+    const numericLongitude = Number(longitude);
+    const numericSpeed = speed == null || speed === '' ? null : Number(speed);
+    const numericHeading = heading == null || heading === '' ? null : Number(heading);
 
     // Validate required fields
-    if ((!scheduleId && !bus_id) || !latitude || !longitude) {
+    if ((!scheduleId && !bus_id) || !Number.isFinite(numericLatitude) || !Number.isFinite(numericLongitude)) {
       return res.status(400).json({ error: 'scheduleId or bus_id, latitude, and longitude are required' });
     }
 
     // Validate coordinates
-    if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) {
+    if (numericLatitude < -90 || numericLatitude > 90 || numericLongitude < -180 || numericLongitude > 180) {
       return res.status(400).json({ error: 'Invalid coordinates' });
+    }
+    if (numericSpeed !== null && (!Number.isFinite(numericSpeed) || numericSpeed < 0)) {
+      return res.status(400).json({ error: 'Invalid speed' });
+    }
+    if (numericHeading !== null && (!Number.isFinite(numericHeading) || numericHeading < 0 || numericHeading > 360)) {
+      return res.status(400).json({ error: 'Invalid heading' });
     }
 
     const client = await pool.connect();
@@ -423,10 +433,10 @@ const updateDriverLocation = async (req, res) => {
       const storedLocation = await storeLiveLocation(
         client,
         trip.schedule_id,
-        parseFloat(latitude),
-        parseFloat(longitude),
-        speed ? parseFloat(speed) : null,
-        heading ? parseFloat(heading) : null
+        numericLatitude,
+        numericLongitude,
+        numericSpeed,
+        numericHeading
       );
 
       emitTrackingLocation(trip, storedLocation);
@@ -436,10 +446,10 @@ const updateDriverLocation = async (req, res) => {
         location: {
           scheduleId: trip.schedule_id,
           bus_id: trip.bus_id,
-          latitude: storedLocation ? parseFloat(storedLocation.latitude) : parseFloat(latitude),
-          longitude: storedLocation ? parseFloat(storedLocation.longitude) : parseFloat(longitude),
-          speed: storedLocation?.speed ? parseFloat(storedLocation.speed) : (speed ? parseFloat(speed) : null),
-          heading: storedLocation?.heading ? parseFloat(storedLocation.heading) : (heading ? parseFloat(heading) : null),
+          latitude: storedLocation ? parseFloat(storedLocation.latitude) : numericLatitude,
+          longitude: storedLocation ? parseFloat(storedLocation.longitude) : numericLongitude,
+          speed: storedLocation?.speed == null ? numericSpeed : parseFloat(storedLocation.speed),
+          heading: storedLocation?.heading == null ? numericHeading : parseFloat(storedLocation.heading),
           recorded_at: storedLocation?.recorded_at || new Date().toISOString(),
         },
         message: 'Location updated',
@@ -463,9 +473,14 @@ const startTrip = async (req, res) => {
   try {
     const userId = req.userId;
     const { scheduleId, bus_id, latitude, longitude } = req.body;
+    const numericLatitude = Number(latitude);
+    const numericLongitude = Number(longitude);
 
-    if ((!scheduleId && !bus_id) || !latitude || !longitude) {
+    if ((!scheduleId && !bus_id) || !Number.isFinite(numericLatitude) || !Number.isFinite(numericLongitude)) {
       return res.status(400).json({ error: 'scheduleId or bus_id, latitude, and longitude are required' });
+    }
+    if (numericLatitude < -90 || numericLatitude > 90 || numericLongitude < -180 || numericLongitude > 180) {
+      return res.status(400).json({ error: 'Invalid coordinates' });
     }
 
     const client = await pool.connect();
@@ -478,8 +493,8 @@ const startTrip = async (req, res) => {
       const storedLocation = await storeLiveLocation(
         client,
         result.trip.schedule_id,
-        parseFloat(latitude),
-        parseFloat(longitude),
+        numericLatitude,
+        numericLongitude,
         0,
         null
       );

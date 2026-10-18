@@ -2428,7 +2428,7 @@ const bookMobileTicket = async (req, res) => {
     if (existing.rows.length) {
       await client.query('COMMIT');
       const existingTicket = serializeMobileTicket(existing.rows[0], schedule, fromStop, toStop);
-      existingTicket.qrData = { bookingId: bookingRef, bookingRef, ticketId: existing.rows[0].id, ticketNumber: bookingRef, from: fromStop, to: toStop, seatNumber: existing.rows[0].seat_number, seatNumbers: [String(existing.rows[0].seat_number)], date: schedule.date, bus: schedule.plate_number || null, userId };
+      existingTicket.qrData = { bookingId: bookingRef, bookingRef, ticketId: existing.rows[0].id, ticketNumber: bookingRef, tripId: schedule.schedule_id, scheduleId: schedule.schedule_id, from: fromStop, to: toStop, seatNumber: existing.rows[0].seat_number, seatNumbers: [String(existing.rows[0].seat_number)], date: schedule.date, bus: schedule.plate_number || null, userId };
       return res.json({ success: true, booking: { bookingId: bookingRef, booking_ref: bookingRef }, tickets: [existingTicket], qrData: existingTicket.qrData, qrCodeUrl: existing.rows[0].qr_code_url || null, idempotent: true });
     }
 
@@ -2458,13 +2458,14 @@ const bookMobileTicket = async (req, res) => {
     if (price === null) throw Object.assign(new Error('No active fare found for this trip segment'), { statusCode: 400 });
 
     const ticketColumns = await getTableColumns(client, 'tickets');
-    const qrData = { bookingId: bookingRef, bookingRef, ticketNumber: bookingRef, from: fromStop, to: toStop, seatNumber: seat, seatNumbers: [seat], date: schedule.date, bus: schedule.plate_number || null, userId };
+    const qrData = { bookingId: bookingRef, bookingRef, ticketId: null, ticketNumber: bookingRef, tripId: schedule.schedule_id, scheduleId: schedule.schedule_id, from: fromStop, to: toStop, seatNumber: seat, seatNumbers: [seat], date: schedule.date, bus: schedule.plate_number || null, userId };
     const values = { id: crypto.randomUUID(), passenger_id: userId, schedule_id: schedule.schedule_id, company_id: schedule.company_id || null, route_id: schedule.route_id, trip_date: schedule.date, from_stop: fromStop, to_stop: toStop, from_sequence: occupancy.fromSeq, to_sequence: occupancy.toSeq, seat_number: seat, price, status: 'CONFIRMED', booking_ref: bookingRef, payment_id: null, passenger_name: req.user?.full_name || req.user?.name || null, booked_at: new Date(), created_at: new Date(), updated_at: new Date() };
     const insertColumns = Object.keys(values).filter((column) => ticketColumns.has(column));
     const insertParams = insertColumns.map((column) => values[column]);
     const placeholders = insertColumns.map((_, index) => `$${index + 1}`).join(', ');
     const ticketResult = await client.query(`INSERT INTO tickets (${insertColumns.join(', ')}) VALUES (${placeholders}) RETURNING *`, insertParams);
     const ticket = ticketResult.rows[0];
+    qrData.ticketId = ticket.id;
     const qrCodeUrl = await QRCode.toDataURL(JSON.stringify(qrData), { errorCorrectionLevel: 'M', margin: 1, width: 220 });
     if (ticketColumns.has('qr_code_url')) await client.query('UPDATE tickets SET qr_code_url = $1, updated_at = NOW() WHERE id = $2', [qrCodeUrl, ticket.id]);
     ticket.qr_code_url = qrCodeUrl;
@@ -2639,6 +2640,8 @@ const getGuestTickets = async (req, res) => {
         bookingRef: booking.transaction_ref || booking.booking_id,
         userId: booking.passenger_id,
         ticketId: ticket.id,
+        tripId: ticket.schedule_id,
+        scheduleId: ticket.schedule_id,
         ticketNumber: ticket.booking_ref || ticket.id,
         from: ticket.route_from || null,
         to: ticket.route_to || null,

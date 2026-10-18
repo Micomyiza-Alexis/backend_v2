@@ -97,6 +97,30 @@ const mapDriverSchedule = (schedule) => ({
 	busPlateNumber: schedule.Bus?.plate_number || null,
 });
 
+// The shared-route booking flow stores tickets against bus_schedules.schedule_id,
+// while older driver data can also expose the same physical journey from
+// schedules.id. Do not present both database rows as separate trips: selecting
+// the legacy row would make an otherwise valid ticket fail trip validation.
+const dedupePhysicalTrips = (trips) => {
+	const byJourney = new Map();
+	for (const trip of trips || []) {
+		const key = [
+			String(trip.bus_id || '').trim(),
+			String(trip.schedule_date || '').slice(0, 10),
+			String(trip.departure_time || '').slice(0, 5),
+			String(trip.route_from || '').trim().toLowerCase(),
+			String(trip.route_to || '').trim().toLowerCase(),
+		].join('|');
+		if (!key || key === '||||') continue;
+
+		const current = byJourney.get(key);
+		if (!current || (current.source !== 'bus_schedules' && trip.source === 'bus_schedules')) {
+			byJourney.set(key, trip);
+		}
+	}
+	return Array.from(byJourney.values());
+};
+
 const fetchAssignedDriverSchedules = async (userId) => {
 	const assignment = await resolveAssignedBus(userId);
 	if (assignment.error) {
@@ -191,7 +215,7 @@ const fetchAssignedDriverSchedules = async (userId) => {
 			[busIds, companyId]
 		);
 
-		const mappedTrips = tripsQuery.rows.map((trip) => ({
+		const mappedTrips = dedupePhysicalTrips(tripsQuery.rows).map((trip) => ({
 			id: trip.id,
 			routeName: trip.route_from && trip.route_to ? `${trip.route_from} → ${trip.route_to}` : 'Unknown Route',
 			routeFrom: trip.route_from,
@@ -1087,7 +1111,7 @@ const getDashboard = async (req, res) => {
 			[dashboardBusIds, companyId]
 		);
 
-		const upcoming = await attachOperationalStatusesToSchedules(upcomingQ.rows.map(r => ({
+		const upcoming = await attachOperationalStatusesToSchedules(dedupePhysicalTrips(upcomingQ.rows).map(r => ({
 			id: r.id,
 			routeFrom: r.route_from,
 			routeTo: r.route_to,
