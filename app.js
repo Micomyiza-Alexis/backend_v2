@@ -23,35 +23,60 @@ let isDatabaseConnected = false;
 // Security headers - should be first
 app.use(helmet());
 
-// CORS configuration - move this BEFORE routes
+// CORS configuration - keep this BEFORE routes
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5000',
+  'https://project-safaritix-transportation.vercel.app',
+  'https://africastalking.com',
+  ...(process.env.FRONTEND_URL
+    ? [process.env.FRONTEND_URL.replace(/\/+$/, '')]
+    : []),
+]);
+
+function isTrustedVercelPreview(origin) {
+  try {
+    const url = new URL(origin);
+
+    return (
+      url.protocol === 'https:' &&
+      /^project-safaritix-transpor[a-z]*-git-[a-z0-9-]+-micomyiza-alexis-projects\.vercel\.app$/.test(
+        url.hostname
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
 const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl requests, or Africa's Talking)
+  origin(origin, callback) {
+    // Allow non-browser requests, including mobile apps and curl.
     if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'https://project-safaritix-transportation.vercel.app',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:5000',
-      'https://africastalking.com', // Africa's Talking sandbox
-      process.env.FRONTEND_URL
-    ].filter(Boolean);
-    
-    // In development, allow all origins
+
+    // Preserve local development behavior.
     if (process.env.NODE_ENV !== 'production') {
       return callback(null, true);
     }
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
+
+    const normalizedOrigin = origin.replace(/\/+$/, '');
+
+    if (
+      allowedOrigins.has(normalizedOrigin) ||
+      isTrustedVercelPreview(normalizedOrigin)
+    ) {
+      return callback(null, true);
     }
+
+    return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
-  optionsSuccessStatus: 200
+  methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 200,
 };
+
 app.use(cors(corsOptions));
 
 // Request logging
